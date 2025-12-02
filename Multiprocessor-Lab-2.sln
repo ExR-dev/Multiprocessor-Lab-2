@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36518.9 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Multiprocessor-Lab-2", "Multiprocessor-Lab-2.vcxproj", "{BA459C6D-1111-2FA5-FB53-9827BF8EB22A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BA459C6D-1111-2FA5-FB53-9827BF8EB22A}.Debug|x64.ActiveCfg = Debug|x64
+		{BA459C6D-1111-2FA5-FB53-9827BF8EB22A}.Debug|x64.Build.0 = Debug|x64
+		{BA459C6D-1111-2FA5-FB53-9827BF8EB22A}.Release|x64.ActiveCfg = Release|x64
+		{BA459C6D-1111-2FA5-FB53-9827BF8EB22A}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E4D03203-F29C-4721-8437-58833CDA9FBD}
+	EndGlobalSection
+EndGlobal
