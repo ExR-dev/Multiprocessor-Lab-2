@@ -78,7 +78,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="gaussjordanpar.cu" />
-    <CudaCompile Include="kernel.cu" />
     <CudaCompile Include="oddevensortpar.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
