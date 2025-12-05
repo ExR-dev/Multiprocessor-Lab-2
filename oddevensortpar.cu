@@ -8,43 +8,31 @@
 #include <chrono>
 
 constexpr unsigned int arr_size = 100000; // Number of elements in the input
+constexpr unsigned int thread_count = (1 << 9);
+constexpr unsigned int block_count = ((arr_size / 2) + thread_count - 1) / thread_count;
 
 
 __global__ void OddEvenSortSingleBlockKernel(int *numbers, int size)
 {
-	int stride = blockDim.x;
+	int stride = blockDim.x * 2;
 
 	for (int phase = 0; phase < size; ++phase)
 	{
-		int i = threadIdx.x;
-		for (; i < size; i += stride)
+		for (int i = threadIdx.x * 2; i < size; i += stride)
 		{
-			if ((phase & 1) == 0)
+			int idx = i;
+
+			if ((phase & 1) != 0)
+				idx++; // Odd phase, otherwise even phase
+
+			if (idx + 1 < size)
 			{
-				// Even phase
-				if (i % 2 == 0 && i + 1 < size)
+				if (numbers[idx] > numbers[idx + 1])
 				{
-					if (numbers[i] > numbers[i + 1])
-					{
-						// Swap
-						int temp = numbers[i];
-						numbers[i] = numbers[i + 1];
-						numbers[i + 1] = temp;
-					}
-				}
-			}
-			else
-			{
-				// Odd phase
-				if (i % 2 == 1 && i + 1 < size)
-				{
-					if (numbers[i] > numbers[i + 1])
-					{
-						// Swap
-						int temp = numbers[i];
-						numbers[i] = numbers[i + 1];
-						numbers[i + 1] = temp;
-					}
+					// Swap
+					int temp = numbers[idx];
+					numbers[idx] = numbers[idx + 1];
+					numbers[idx + 1] = temp;
 				}
 			}
 		}
@@ -53,45 +41,19 @@ __global__ void OddEvenSortSingleBlockKernel(int *numbers, int size)
 	}
 }
 
-__global__ void OddEvenSortMultiBlockKernel(int *numbers, int size)
+__global__ void OddEvenSortMultiBlockKernel(int *numbers, int size, int iter)
 {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int i = 2 * (blockIdx.x * blockDim.x + threadIdx.x) + (iter & 1);
 
-	if (i >= size)
+	if (i + 1 >= size)
 		return;
-
-	for (int phase = 0; phase < size; ++phase)
-	{
-		if ((phase & 1) == 0)
-		{
-			// Even phase
-			if (i % 2 == 0 && i + 1 < size)
-			{
-				if (numbers[i] > numbers[i + 1])
-				{
-					// Swap
-					int temp = numbers[i];
-					numbers[i] = numbers[i + 1];
-					numbers[i + 1] = temp;
-				}
-			}
-		}
-		else
-		{
-			// Odd phase
-			if (i % 2 == 1 && i + 1 < size)
-			{
-				if (numbers[i] > numbers[i + 1])
-				{
-					// Swap
-					int temp = numbers[i];
-					numbers[i] = numbers[i + 1];
-					numbers[i + 1] = temp;
-				}
-			}
-		}
 		
-		__syncthreads();
+	if (numbers[i] > numbers[i + 1])
+	{
+		// Swap
+		int temp = numbers[i];
+		numbers[i] = numbers[i + 1];
+		numbers[i + 1] = temp;
 	}
 }
 
@@ -117,13 +79,12 @@ cudaError_t OddEvenSortCuda(std::vector<int> &numbers)
 		return ret;
 	}
 
-	OddEvenSortSingleBlockKernel<<<1, 1024>>>(dev_numbersIn, size);
 
-	/*
-	constexpr int threadsPerBlock = 1024;
-	constexpr int blocks = (arr_size + threadsPerBlock - 1) / threadsPerBlock;
-	OddEvenSortSingleBlockKernel<<<blocks, threadsPerBlock>>>(dev_numbersIn, size);
-	*/
+	OddEvenSortSingleBlockKernel<<<1, thread_count>>>(dev_numbersIn, size);
+
+	//for (int iter = 0; iter < size; ++iter)
+	//	OddEvenSortMultiBlockKernel<<<block_count, thread_count>>>(dev_numbersIn, size, iter);
+	
 
 	ret = cudaGetLastError();
 	if (ret != cudaSuccess)
