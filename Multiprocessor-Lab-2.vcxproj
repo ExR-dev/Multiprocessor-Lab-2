@@ -78,7 +78,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="gaussjordanpar.cu" />
-    <CudaCompile Include="oddevensortpar.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cpp.hint" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
