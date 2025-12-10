@@ -4,14 +4,14 @@
 
 #include <vector>
 #include <algorithm>
-#include <iostream>
+//#include <iostream>
 #include <chrono>
 #include <stdio.h>
 
 
 #define MAX_SIZE 4096
 
-typedef double matrix[MAX_SIZE][MAX_SIZE];
+typedef double matrix[MAX_SIZE * MAX_SIZE];
 
 int N;              /* matrix size			*/
 int maxnum;         /* max number of element*/
@@ -22,58 +22,117 @@ double b[MAX_SIZE]; /* vector b             */
 double y[MAX_SIZE]; /* vector y             */
 
 
-__device__ int CoordToIndex(int row, int col, int n)
+__host__ __device__ int CoordToIndex(int row, int col, int n)
 {
-    return row * n + col;
-}
-
-__device__ int IndexToRow(int index, int n)
-{
-	return index / n;
-}
-
-__device__ int IndexToCol(int index, int n)
-{
-    return index % n;
+	return row * n + col;
 }
 
 
-__global__ void GaussianJordanKernel(double **mat, double *b, double *y, int n)
+__global__ void GaussJordanKernel(double *mat, double *b, double *y, int n, int threadCount)
 {
-	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for (int k = 0; k < N; k++) /* Outer loop */
-    {
-        for (int j = k + 1; j < N; j++) /* Division step */
+    for (int k = 0; k < n; k++) // Outer loop
+    { 
+        double invPivotValue = 1.0 / mat[CoordToIndex(k, k, n)];
+
+        for (int j = k + 1 + idx; j < n; j += threadCount) // Parallelized
         {
-            mat[k][j] = mat[k][j] / mat[k][k];
+            mat[CoordToIndex(k, j, n)] *= invPivotValue; // Division step
         }
 
-        y[k] = b[k] / mat[k][k];
-        mat[k][k] = 1.0;
+        double yK = b[k] * invPivotValue;
 
-        for (int i = k + 1; i < N; i++)
+        if (idx == 0)
+            y[k] = yK;
+
+        __syncthreads();
+
+        if (idx == 0)
+            mat[CoordToIndex(k, k, n)] = 1.0;
+
+        for (int i = k + 1 + idx; i < n; i += threadCount) // Parallelized
         {
-            for (int j = k + 1; j < N; j++) /* Elimination step */
+            int rowIndex = CoordToIndex(i, k, n);
+            double temp = mat[rowIndex];
+
+            for (int j = k + 1; j < n; j++)
             {
-                mat[i][j] = mat[i][j] - mat[i][k] * mat[k][j];
+                mat[CoordToIndex(i, j, n)] -= temp * mat[CoordToIndex(k, j, n)]; // Elimination step
             }
 
-            b[i] = b[i] - mat[i][k] * y[k];
-            mat[i][k] = 0.0;
+            //b[i] -= temp * yK;
+            mat[rowIndex] = 0.0;
         }
 
-        for (int i = 0; i < k; i++)
+        for (int i = idx; i < k; i += threadCount) // Parallelized
         {
-            for (int j = k + 1; j < N; j++) /* Additional Elimination for Gauss-Jordan */
+            int rowIndex = CoordToIndex(i, k, n);
+			double temp = mat[rowIndex];
+
+            for (int j = k + 1; j < n; j++)
             {
-                mat[i][j] = mat[i][j] - mat[i][k] * mat[k][j];
+                mat[CoordToIndex(i, j, n)] -= temp * mat[CoordToIndex(k, j, n)]; // Additional Elimination for Gauss-Jordan
             }
 
-            y[i] = y[i] - mat[i][k] * y[k];
-            mat[i][k] = 0.0;
+            y[i] -= temp * yK; // HACK
+            mat[rowIndex] = 0.0;
         }
+        
+        __syncthreads();
     }
+}
+
+__global__ void GaussJordanDivKernel(double *mat, double *b, double *y, int n, int k)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int j = (k + 1) + idx;
+
+    if (j >= n)
+        return;
+
+    int pivotIndex = CoordToIndex(k, k, n);
+    double invPivotValue = 1.0 / mat[pivotIndex];
+
+    mat[CoordToIndex(k, j, n)] *= invPivotValue;
+
+    if (idx == 0)
+        y[k] = b[k] * invPivotValue;
+}
+
+__global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, int k)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = idx;
+
+    if (i >= n)
+        return;
+
+    if (i == k)
+    {
+        mat[CoordToIndex(k, k, n)] = 1.0;
+        return;
+    }
+
+    int rowIndex = CoordToIndex(i, k, n);
+	double pivotValue = mat[rowIndex];
+
+    for (int j = k + 1; j < n; j++)
+    {
+        mat[CoordToIndex(i, j, n)] -= pivotValue * mat[CoordToIndex(k, j, n)];
+    }
+
+    if (i > k)
+    {
+        //b[i] -= pivotValue * y[k];
+    }
+    else if (i < k)
+    {
+        y[i] -= pivotValue * y[k]; // HACK
+    }
+    
+    mat[rowIndex] = 0.0;
 }
 
 
@@ -85,121 +144,153 @@ cudaError_t work()
 
     size_t size = static_cast<size_t>(N) * N;
 
-
     cudaError_t ret = cudaMalloc((void **)&dev_matrix, sizeof(double) * size);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         return ret;
     }
     
-    ret = cudaMalloc((void **)&dev_b, sizeof(double) * MAX_SIZE);
+    ret = cudaMalloc((void **)&dev_b, sizeof(double) * N);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
         return ret;
     }
     
-    ret = cudaMalloc((void **)&dev_y, sizeof(double) * MAX_SIZE);
+    ret = cudaMalloc((void **)&dev_y, sizeof(double) * N);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
         cudaFree(dev_b);
         return ret;
     }
 
-
     ret = cudaMemcpy(dev_matrix, A, sizeof(double) * size, cudaMemcpyHostToDevice);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
         cudaFree(dev_b);
         cudaFree(dev_y);
         return ret;
     }
 
-	ret = cudaMemcpy(dev_b, b, sizeof(double) * MAX_SIZE, cudaMemcpyHostToDevice);
+	ret = cudaMemcpy(dev_b, b, sizeof(double) * N, cudaMemcpyHostToDevice);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
         cudaFree(dev_b);
         cudaFree(dev_y);
         return ret;
 	}
 
-	const unsigned int threadCount = 128;
-    const unsigned int blockCount = (N + threadCount - 1) / threadCount;
 
-    GaussianJordanKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N);
-
-    ret = cudaGetLastError();
-    if (ret != cudaSuccess)
+    if (false)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
-        cudaFree(dev_matrix);
-        cudaFree(dev_b);
-        cudaFree(dev_y);
-        return ret;
+		const unsigned int threadCount = 64;
+
+        GaussJordanKernel<<<1, threadCount>>>(dev_matrix, dev_b, dev_y, N, threadCount);
+
+        ret = cudaGetLastError();
+        if (ret != cudaSuccess)
+        {
+            printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
+            cudaFree(dev_matrix);
+            cudaFree(dev_b);
+            cudaFree(dev_y);
+            return ret;
+        }
+    }
+    else
+    {
+        for (int k = 0; k < N; k++)
+        {
+            const unsigned int threadCount = 16;
+            const unsigned int blockCount = (N + threadCount - 1) / threadCount;
+
+            GaussJordanDivKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+
+            ret = cudaGetLastError();
+            if (ret != cudaSuccess)
+            {
+                printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
+                cudaFree(dev_matrix);
+                cudaFree(dev_b);
+                cudaFree(dev_y);
+                return ret;
+            }
+
+
+            GaussJordanElimKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+
+            ret = cudaGetLastError();
+            if (ret != cudaSuccess)
+            {
+                printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
+                cudaFree(dev_matrix);
+                cudaFree(dev_b);
+                cudaFree(dev_y);
+                return ret;
+            }
+        }
     }
 
 
     ret = cudaDeviceSynchronize();
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
         cudaFree(dev_b);
         cudaFree(dev_y);
         return ret;
     }
 
+    cudaFree(dev_b);
 
-    ret = cudaMemcpy(A, dev_matrix, size * sizeof(double), cudaMemcpyDeviceToHost);
+    ret = cudaMemcpy(A, dev_matrix, sizeof(double) * size, cudaMemcpyDeviceToHost);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
-        cudaFree(dev_b);
         cudaFree(dev_y);
         return ret;
     }
 
-	ret = cudaMemcpy(y, dev_y, MAX_SIZE * sizeof(double), cudaMemcpyDeviceToHost);
+	ret = cudaMemcpy(y, dev_y, sizeof(double) * N, cudaMemcpyDeviceToHost);
     if (ret != cudaSuccess)
     {
-        std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
         cudaFree(dev_matrix);
-        cudaFree(dev_b);
         cudaFree(dev_y);
         return ret;
 	}
 
-
     cudaFree(dev_matrix);
-    cudaFree(dev_b);
     cudaFree(dev_y);
     return cudaSuccess;
 }
+
 
 void Print_Matrix()
 {
     int i, j;
 
     printf("Matrix A:\n");
-    for (i = 0; i < N; i++)
+    for (i = 0; i < std::min(N, 16); i++)
     {
         printf("[");
-        for (j = 0; j < N; j++)
-            printf(" %5.2f,", A[i][j]);
+        for (j = 0; j < std::min(N, 16); j++)
+            printf(" %5.2f,", A[CoordToIndex(i, j, N)]);
         printf("]\n");
     }
 
     printf("Vector y:\n[");
-    for (j = 0; j < N; j++)
+    for (j = 0; j < std::min(N, 16); j++)
         printf(" %5.2f,", y[j]);
     printf("]\n");
 
@@ -217,20 +308,24 @@ void Init_Matrix()
 
     if (strcmp(Init, "rand") == 0)
     {
+        srand(0);
+
         for (i = 0; i < N; i++)
         {
             for (j = 0; j < N; j++)
             {
                 if (i == j) /* diagonal dominance */
                 {
-                    A[i][j] = (double)(rand() % maxnum) + 5.0;
+                    A[CoordToIndex(i, j, N)] = (double)(rand() % maxnum) + 5.0;
                 }
                 else
                 {
-                    A[i][j] = (double)(rand() % maxnum) + 1.0;
+                    A[CoordToIndex(i, j, N)] = (double)(rand() % maxnum) + 1.0;
                 }
             }
         }
+
+        srand(time(0));
     }
 
     if (strcmp(Init, "fast") == 0)
@@ -241,11 +336,11 @@ void Init_Matrix()
             {
                 if (i == j) /* diagonal dominance */
                 {
-                    A[i][j] = 5.0;
+                    A[CoordToIndex(i, j, N)] = 5.0;
                 }
                 else
                 {
-                    A[i][j] = 2.0;
+                    A[CoordToIndex(i, j, N)] = 2.0;
                 }
             }
         }
@@ -266,10 +361,11 @@ void Init_Matrix()
 
 void Init_Default()
 {
-    N = 2048;
-    Init = "fast";
+    N = 64;
+    //Init = "fast";
+    Init = "rand";
     maxnum = 15.0;
-    PRINT = 0;
+    PRINT = 1;
 }
 
 int Read_Options(int argc, char **argv)
@@ -326,11 +422,12 @@ int Read_Options(int argc, char **argv)
             }
         }
     }
+	return 0;
 }
 
 int main(int argc, char **argv)
 {
-    printf("Gauss Jordan\n");
+    printf("Gauss Jordan Par\n");
 
     Init_Default();           /* Init default values	*/
     Read_Options(argc, argv); /* Read arguments	*/
@@ -339,7 +436,7 @@ int main(int argc, char **argv)
 	cudaError_t ret = cudaSetDevice(0);
 	if (ret != cudaSuccess)
 	{
-		std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
 		return 1;
 	}
 
@@ -349,19 +446,19 @@ int main(int argc, char **argv)
 
 	if (ret != cudaSuccess)
 	{
-		std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
 		return 1;
 	}
 
     if (PRINT == 1)
         Print_Matrix();
 
-	std::cout << "Elapsed time =  " << std::chrono::duration<double>(end - start).count() << " sec\n";
+    printf("Elapsed time = %f sec\n", std::chrono::duration<double>(end - start).count());
 
 	ret = cudaDeviceReset();
 	if (ret != cudaSuccess)
 	{
-		std::cout << "CUDA error (" << __LINE__ << "): " << cudaGetErrorString(ret) << std::endl;
+        printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
 		return 1;
 	}
 

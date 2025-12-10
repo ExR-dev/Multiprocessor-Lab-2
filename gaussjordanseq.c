@@ -5,6 +5,7 @@
  ***************************************************************************/
 
 #include <stdio.h>
+#include <time.h>
 
 #define MAX_SIZE 4096
 
@@ -18,6 +19,8 @@ matrix A;           /* matrix A		*/
 double b[MAX_SIZE]; /* vector b             */
 double y[MAX_SIZE]; /* vector y             */
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 /* forward declarations */
 void work(void);
 void Init_Matrix(void);
@@ -27,17 +30,20 @@ int Read_Options(int, char **);
 
 int main(int argc, char **argv)
 {
-    printf("Gauss Jordan\n");
-    int i, timestart, timeend, iter;
+    printf("Gauss Jordan Seq\n");
 
     Init_Default();           /* Init default values	*/
     Read_Options(argc, argv); /* Read arguments	*/
     Init_Matrix();            /* Init the matrix	*/
 
+    clock_t start = clock();
     work();
+    clock_t end = clock();
 
     if (PRINT == 1)
         Print_Matrix();
+
+    printf("Elapsed time = %f sec\n", (float)(end - start) / CLOCKS_PER_SEC);
 }
 
 void work(void)
@@ -90,6 +96,8 @@ void Init_Matrix()
 
     if (strcmp(Init, "rand") == 0)
     {
+        srand(0);
+
         for (i = 0; i < N; i++)
         {
             for (j = 0; j < N; j++)
@@ -104,6 +112,8 @@ void Init_Matrix()
                 }
             }
         }
+
+        srand(time(0));
     }
 
     if (strcmp(Init, "fast") == 0)
@@ -142,16 +152,16 @@ void Print_Matrix()
     int i, j;
 
     printf("Matrix A:\n");
-    for (i = 0; i < N; i++)
+    for (i = 0; i < min(N, 16); i++)
     {
         printf("[");
-        for (j = 0; j < N; j++)
+        for (j = 0; j < min(N, 16); j++)
             printf(" %5.2f,", A[i][j]);
         printf("]\n");
     }
 
     printf("Vector y:\n[");
-    for (j = 0; j < N; j++)
+    for (j = 0; j < min(N, 16); j++)
         printf(" %5.2f,", y[j]);
     printf("]\n");
 
@@ -160,10 +170,10 @@ void Print_Matrix()
 
 void Init_Default()
 {
-    N = 2048;
-    Init = "fast";
+    N = 64;
+    Init = "rand";
     maxnum = 15.0;
-    PRINT = 0;
+    PRINT = 1;
 }
 
 int Read_Options(int argc, char **argv)
