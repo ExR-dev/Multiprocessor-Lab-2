@@ -28,61 +28,6 @@ __host__ __device__ int CoordToIndex(int row, int col, int n)
 }
 
 
-__global__ void GaussJordanKernel(double *mat, double *b, double *y, int n, int threadCount)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    for (int k = 0; k < n; k++) // Outer loop
-    { 
-        double invPivotValue = 1.0 / mat[CoordToIndex(k, k, n)];
-
-        for (int j = k + 1 + idx; j < n; j += threadCount) // Parallelized
-        {
-            mat[CoordToIndex(k, j, n)] *= invPivotValue; // Division step
-        }
-
-        double yK = b[k] * invPivotValue;
-
-        if (idx == 0)
-            y[k] = yK;
-
-        __syncthreads();
-
-        if (idx == 0)
-            mat[CoordToIndex(k, k, n)] = 1.0;
-
-        for (int i = k + 1 + idx; i < n; i += threadCount) // Parallelized
-        {
-            int rowIndex = CoordToIndex(i, k, n);
-            double temp = mat[rowIndex];
-
-            for (int j = k + 1; j < n; j++)
-            {
-                mat[CoordToIndex(i, j, n)] -= temp * mat[CoordToIndex(k, j, n)]; // Elimination step
-            }
-
-            //b[i] -= temp * yK;
-            mat[rowIndex] = 0.0;
-        }
-
-        for (int i = idx; i < k; i += threadCount) // Parallelized
-        {
-            int rowIndex = CoordToIndex(i, k, n);
-			double temp = mat[rowIndex];
-
-            for (int j = k + 1; j < n; j++)
-            {
-                mat[CoordToIndex(i, j, n)] -= temp * mat[CoordToIndex(k, j, n)]; // Additional Elimination for Gauss-Jordan
-            }
-
-            y[i] -= temp * yK; // HACK
-            mat[rowIndex] = 0.0;
-        }
-        
-        __syncthreads();
-    }
-}
-
 __global__ void GaussJordanDivKernel(double *mat, double *b, double *y, int n, int k)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -96,9 +41,13 @@ __global__ void GaussJordanDivKernel(double *mat, double *b, double *y, int n, i
     double invPivotValue = 1.0 / mat[pivotIndex];
 
     mat[CoordToIndex(k, j, n)] *= invPivotValue;
+}
 
-    if (idx == 0)
-        y[k] = b[k] * invPivotValue;
+__global__ void GaussJordanIntermediateKernel(double *mat, double *b, double *y, int n, int k)
+{
+    int pivotIndex = CoordToIndex(k, k, n);
+    y[k] = b[k] / mat[pivotIndex];
+    mat[pivotIndex] = 1.0;
 }
 
 __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, int k)
@@ -110,10 +59,7 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
         return;
 
     if (i == k)
-    {
-        mat[CoordToIndex(k, k, n)] = 1.0;
         return;
-    }
 
     int rowIndex = CoordToIndex(i, k, n);
 	double pivotValue = mat[rowIndex];
@@ -125,7 +71,7 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
 
     if (i > k)
     {
-        //b[i] -= pivotValue * y[k];
+        b[i] -= pivotValue * y[k];
     }
     else if (i < k)
     {
@@ -189,11 +135,38 @@ cudaError_t work()
 	}
 
 
-    if (false)
+    for (int k = 0; k < N; k++)
     {
-		const unsigned int threadCount = 64;
+        const unsigned int threadCount = 128;
+        const unsigned int blockCount = (N + threadCount - 1) / threadCount;
 
-        GaussJordanKernel<<<1, threadCount>>>(dev_matrix, dev_b, dev_y, N, threadCount);
+        GaussJordanDivKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+
+        ret = cudaGetLastError();
+        if (ret != cudaSuccess)
+        {
+            printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
+            cudaFree(dev_matrix);
+            cudaFree(dev_b);
+            cudaFree(dev_y);
+            return ret;
+        }
+
+
+        GaussJordanIntermediateKernel<<<1, 1>>>(dev_matrix, dev_b, dev_y, N, k);
+
+        ret = cudaGetLastError();
+        if (ret != cudaSuccess)
+        {
+            printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
+            cudaFree(dev_matrix);
+            cudaFree(dev_b);
+            cudaFree(dev_y);
+            return ret;
+        }
+
+
+        GaussJordanElimKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
 
         ret = cudaGetLastError();
         if (ret != cudaSuccess)
@@ -205,40 +178,7 @@ cudaError_t work()
             return ret;
         }
     }
-    else
-    {
-        for (int k = 0; k < N; k++)
-        {
-            const unsigned int threadCount = 16;
-            const unsigned int blockCount = (N + threadCount - 1) / threadCount;
-
-            GaussJordanDivKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
-
-            ret = cudaGetLastError();
-            if (ret != cudaSuccess)
-            {
-                printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
-                cudaFree(dev_matrix);
-                cudaFree(dev_b);
-                cudaFree(dev_y);
-                return ret;
-            }
-
-
-            GaussJordanElimKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
-
-            ret = cudaGetLastError();
-            if (ret != cudaSuccess)
-            {
-                printf("CUDA error (%d): %s\n", __LINE__, cudaGetErrorString(ret));
-                cudaFree(dev_matrix);
-                cudaFree(dev_b);
-                cudaFree(dev_y);
-                return ret;
-            }
-        }
-    }
-
+    
 
     ret = cudaDeviceSynchronize();
     if (ret != cudaSuccess)
@@ -361,7 +301,7 @@ void Init_Matrix()
 
 void Init_Default()
 {
-    N = 64;
+    N = 2048;
     //Init = "fast";
     Init = "rand";
     maxnum = 15.0;

@@ -170,7 +170,7 @@ void Print_Matrix()
 
 void Init_Default()
 {
-    N = 64;
+    N = 2048;
     Init = "rand";
     maxnum = 15.0;
     PRINT = 1;
