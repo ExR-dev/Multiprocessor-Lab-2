@@ -4,7 +4,6 @@
 
 #include <vector>
 #include <algorithm>
-//#include <iostream>
 #include <chrono>
 #include <stdio.h>
 
@@ -22,6 +21,7 @@ double b[MAX_SIZE]; /* vector b             */
 double y[MAX_SIZE]; /* vector y             */
 
 
+// Convert 2D coordinates to 1D index
 __host__ __device__ int CoordToIndex(int row, int col, int n)
 {
 	return row * n + col;
@@ -31,18 +31,17 @@ __host__ __device__ int CoordToIndex(int row, int col, int n)
 __global__ void GaussJordanDivKernel(double *mat, double *b, double *y, int n, int k)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
     int j = (k + 1) + idx;
 
+	// Ensure we are within bounds
     if (j >= n)
         return;
 
-    int pivotIndex = CoordToIndex(k, k, n);
-    double invPivotValue = 1.0 / mat[pivotIndex];
-
-    mat[CoordToIndex(k, j, n)] *= invPivotValue;
+	// Perform division step
+    mat[CoordToIndex(k, j, n)] /= mat[CoordToIndex(k, k, n)];
 }
 
+// Only one thread is needed for this step, but it must be fully sequential
 __global__ void GaussJordanIntermediateKernel(double *mat, double *b, double *y, int n, int k)
 {
     int pivotIndex = CoordToIndex(k, k, n);
@@ -55,9 +54,11 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int i = idx;
 
+	// Ensure we are within bounds
     if (i >= n)
         return;
 
+	// Skip the pivot row
     if (i == k)
         return;
 
@@ -69,13 +70,15 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
         mat[CoordToIndex(i, j, n)] -= pivotValue * mat[CoordToIndex(k, j, n)];
     }
 
+	// Perform both elimination steps in the same kernel to reduce kernel launches
+	// At most one group will experience control divergence
     if (i > k)
     {
         b[i] -= pivotValue * y[k];
     }
     else if (i < k)
     {
-        y[i] -= pivotValue * y[k]; // HACK
+        y[i] -= pivotValue * y[k];
     }
     
     mat[rowIndex] = 0.0;
@@ -90,6 +93,7 @@ cudaError_t work()
 
     size_t size = static_cast<size_t>(N) * N;
 
+	// Allocate device memory
     cudaError_t ret = cudaMalloc((void **)&dev_matrix, sizeof(double) * size);
     if (ret != cudaSuccess)
     {
@@ -114,6 +118,7 @@ cudaError_t work()
         return ret;
     }
 
+	// Copy data to device
     ret = cudaMemcpy(dev_matrix, A, sizeof(double) * size, cudaMemcpyHostToDevice);
     if (ret != cudaSuccess)
     {
@@ -134,13 +139,15 @@ cudaError_t work()
         return ret;
 	}
 
-
+	// Main Gauss-Jordan elimination loop
     for (int k = 0; k < N; k++)
     {
         const unsigned int threadCount = 128;
-        const unsigned int blockCount = (N + threadCount - 1) / threadCount;
+        const unsigned int divBlockCount = std::max(((N - k) + threadCount - 1) / threadCount, 1u);
+        const unsigned int elimBlockCount = (N + threadCount - 1) / threadCount;
 
-        GaussJordanDivKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+		// Division step
+        GaussJordanDivKernel<<<divBlockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
 
         ret = cudaGetLastError();
         if (ret != cudaSuccess)
@@ -152,7 +159,7 @@ cudaError_t work()
             return ret;
         }
 
-
+		// Intermediate step
         GaussJordanIntermediateKernel<<<1, 1>>>(dev_matrix, dev_b, dev_y, N, k);
 
         ret = cudaGetLastError();
@@ -165,8 +172,8 @@ cudaError_t work()
             return ret;
         }
 
-
-        GaussJordanElimKernel<<<blockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+		// Elimination step
+        GaussJordanElimKernel<<<elimBlockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
 
         ret = cudaGetLastError();
         if (ret != cudaSuccess)
@@ -179,7 +186,7 @@ cudaError_t work()
         }
     }
     
-
+	// Synchronize device
     ret = cudaDeviceSynchronize();
     if (ret != cudaSuccess)
     {
@@ -192,6 +199,7 @@ cudaError_t work()
 
     cudaFree(dev_b);
 
+	// Copy results back to host
     ret = cudaMemcpy(A, dev_matrix, sizeof(double) * size, cudaMemcpyDeviceToHost);
     if (ret != cudaSuccess)
     {
@@ -302,8 +310,7 @@ void Init_Matrix()
 void Init_Default()
 {
     N = 2048;
-    //Init = "fast";
-    Init = "rand";
+    Init = "fast";
     maxnum = 15.0;
     PRINT = 1;
 }
