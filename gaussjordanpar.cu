@@ -152,7 +152,7 @@ cudaError_t work()
 	// Main Gauss-Jordan elimination loop
     for (int k = 0; k < N; k++)
     {
-        const unsigned int threadCount = 128;
+        const unsigned int threadCount = 64;
         const unsigned int divBlockCount = std::max(((N - k) + threadCount - 1) / threadCount, 1u);
         const unsigned int elimBlockCount = (N + threadCount - 1) / threadCount; 
         const unsigned int sharedBytes = (N - k - 1) * sizeof(double);
