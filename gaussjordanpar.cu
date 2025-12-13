@@ -54,6 +54,16 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int i = idx;
 
+    extern __shared__ double s_pivotRow[];
+
+    // Load k-row into shared memory
+    for (int j = k + 1 + threadIdx.x; j < n; j += blockDim.x)
+    {
+        s_pivotRow[j - (k + 1)] = mat[CoordToIndex(k, j, n)];
+    }
+
+    __syncthreads();
+
 	// Ensure we are within bounds
     if (i >= n)
         return;
@@ -67,7 +77,7 @@ __global__ void GaussJordanElimKernel(double *mat, double *b, double *y, int n, 
 
     for (int j = k + 1; j < n; j++)
     {
-        mat[CoordToIndex(i, j, n)] -= pivotValue * mat[CoordToIndex(k, j, n)];
+        mat[CoordToIndex(i, j, n)] -= pivotValue * s_pivotRow[j - (k + 1)];
     }
 
 	// Perform both elimination steps in the same kernel to reduce kernel launches
@@ -144,7 +154,8 @@ cudaError_t work()
     {
         const unsigned int threadCount = 128;
         const unsigned int divBlockCount = std::max(((N - k) + threadCount - 1) / threadCount, 1u);
-        const unsigned int elimBlockCount = (N + threadCount - 1) / threadCount;
+        const unsigned int elimBlockCount = (N + threadCount - 1) / threadCount; 
+        const unsigned int sharedBytes = (N - k - 1) * sizeof(double);
 
 		// Division step
         GaussJordanDivKernel<<<divBlockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
@@ -173,7 +184,7 @@ cudaError_t work()
         }
 
 		// Elimination step
-        GaussJordanElimKernel<<<elimBlockCount, threadCount>>>(dev_matrix, dev_b, dev_y, N, k);
+        GaussJordanElimKernel<<<elimBlockCount, threadCount, sharedBytes>>>(dev_matrix, dev_b, dev_y, N, k);
 
         ret = cudaGetLastError();
         if (ret != cudaSuccess)
@@ -310,7 +321,7 @@ void Init_Matrix()
 void Init_Default()
 {
     N = 2048;
-    Init = "fast";
+    Init = "rand";
     maxnum = 15.0;
     PRINT = 1;
 }

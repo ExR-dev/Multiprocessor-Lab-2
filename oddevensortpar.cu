@@ -7,7 +7,7 @@
 #include <iostream>
 #include <chrono>
 
-constexpr unsigned int arr_size = 100000; // Number of elements in the input
+constexpr unsigned int arr_size = 524288; // Number of elements in the input
 constexpr unsigned int thread_count = (1 << 10);
 constexpr unsigned int block_count = ((arr_size / 2) + thread_count - 1) / thread_count;
 

@@ -171,7 +171,7 @@ void Print_Matrix()
 void Init_Default()
 {
     N = 2048;
-    Init = "fast";
+    Init = "rand";
     maxnum = 15.0;
     PRINT = 1;
 }
